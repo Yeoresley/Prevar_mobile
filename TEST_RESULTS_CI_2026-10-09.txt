@@ -1,0 +1,17 @@
+PREVAR Mobile - Compilación online
+Fecha: 2026-10-09
+
+PASS - Estructura Android validada.
+PASS - Núcleo Kotlin puro compilado por validate_android_source.py cuando kotlinc está disponible.
+PASS - Workflow GitHub Actions presente.
+PASS - workflow_dispatch habilitado para compilación manual.
+PASS - JDK 17 definido.
+PASS - Android SDK 35 / Build Tools 35.0.0 definidos.
+PASS - Gradle 8.9 definido, compatible con AGP 8.7.3 del proyecto.
+PASS - testDebugUnitTest antes de generar APK.
+PASS - assembleDebug configurado.
+PASS - APK publicado como artifact PREVAR-Mobile-debug-apk.
+PASS - YAML sintácticamente parseable.
+
+NO EJECUTADO - Build Android completo en este entorno: no dispone de Android SDK ni acceso a dependencias Maven/Google.
+La ejecución real se hará en GitHub Actions o Android Studio.
