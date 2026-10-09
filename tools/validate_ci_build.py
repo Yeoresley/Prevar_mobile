@@ -11,7 +11,7 @@ required = [
     'workflow_dispatch:',
     'actions/checkout@v4',
     'actions/setup-java@v4',
-    'android-actions/setup-android@v3',
+    'cmdline-tools/latest/bin/sdkmanager',
     'platforms;android-35',
     'build-tools;35.0.0',
     'gradle/actions/setup-gradle@v4',
@@ -24,9 +24,11 @@ required = [
 missing = [x for x in required if x not in text]
 if missing:
     raise SystemExit('Faltan elementos del CI: ' + ', '.join(missing))
+if 'android-actions/setup-android@v3' in text:
+    raise SystemExit('El workflow conserva setup-android@v3, que falla al solicitar el paquete obsoleto tools')
 app = (root / 'app/build.gradle.kts').read_text(encoding='utf-8')
 if not re.search(r'compileSdk\s*=\s*35', app):
     raise SystemExit('compileSdk no coincide con SDK 35 del workflow')
 if not re.search(r'targetSdk\s*=\s*35', app):
     raise SystemExit('targetSdk no coincide con SDK 35 del workflow')
-print('OK - workflow online coherente con PREVAR Mobile y SDK 35.')
+print('OK - workflow online usa el Android SDK preinstalado de GitHub y SDK 35.')
