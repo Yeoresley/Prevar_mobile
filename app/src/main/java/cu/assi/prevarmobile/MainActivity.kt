@@ -439,6 +439,8 @@ private fun EvaluationScreen(
                     .onSuccess { message = "Fotografía guardada offline." }
                     .onFailure { message = it.message }
             }
+        } else if (capture != null) {
+            repository.discardPhotoCapture(capture)
         }
     }
 
