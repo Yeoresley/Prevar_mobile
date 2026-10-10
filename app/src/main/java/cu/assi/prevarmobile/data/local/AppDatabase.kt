@@ -14,9 +14,11 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
         MeasureEntity::class,
         WorkerEntity::class,
         OutboxEntity::class,
-        SyncStateEntity::class
+        SyncStateEntity::class,
+        AttachmentEntity::class,
+        RiskDraftEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
