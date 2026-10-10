@@ -243,7 +243,7 @@ class PrevarRepository(
                     apiError ?: "PREVAR respondió HTTP ${error.code()}."
                 }
             } else {
-                error.message ?: "No fue posible sincronizar."
+                syncFailureMessage(error)
             }
             dao.putState(SyncStateEntity("last_error", message))
             SyncResult(false, message)
@@ -251,15 +251,10 @@ class PrevarRepository(
     }
 
     suspend fun resolveConflictKeepWeb(conflict: SyncConflict): SyncResult {
-        val related = dao.outbox(1000).filter { row ->
-            runCatching {
-                val op = gson.fromJson(row.payloadJson, JsonObject::class.java)
-                op.get("evaluation_id")?.asLong == conflict.evaluationId
-            }.getOrDefault(false)
-        }
-        if (related.isNotEmpty()) {
-            dao.deleteOutbox(related.map { it.uuid })
-        }
+        // Descartar solo el cambio de la evaluación en conflicto.
+        // Las medidas pendientes de la misma evaluación son operaciones independientes
+        // y deben conservarse para la próxima sincronización.
+        dao.deleteOutboxForEntity("evaluation:${conflict.evaluationId}")
         dao.putState(SyncStateEntity("sync_conflict", ""))
         dao.putState(SyncStateEntity("last_error", ""))
         return synchronize()
@@ -402,5 +397,12 @@ internal fun rebaseEvaluationOperation(payloadJson: String, serverVersion: Long,
     payload.addProperty("base_version", serverVersion)
     return gson.toJson(payload)
 }
+
+internal fun syncFailureMessage(error: Throwable): String =
+    if (error is java.io.IOException) {
+        "Sin conexión con PREVAR. Los cambios quedan guardados en el teléfono y se enviarán cuando vuelva la conectividad."
+    } else {
+        error.message ?: "No fue posible sincronizar."
+    }
 
 data class SyncResult(val success: Boolean, val message: String)
