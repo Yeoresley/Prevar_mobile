@@ -29,11 +29,32 @@ interface PrevarDao {
     @Query("SELECT * FROM worker ORDER BY name")
     fun workers(): Flow<List<WorkerEntity>>
 
-    @Query("SELECT * FROM attachment WHERE evaluationId=:evaluationId ORDER BY createdAt DESC")
+    @Query("SELECT * FROM attachment WHERE evaluationId=:evaluationId AND deleted=0 ORDER BY createdAt DESC")
     fun attachments(evaluationId: Long): Flow<List<AttachmentEntity>>
 
-    @Query("SELECT * FROM risk_draft WHERE evaluationId=:evaluationId ORDER BY updatedAt DESC")
+    @Query("SELECT * FROM attachment WHERE evaluationId=:evaluationId")
+    suspend fun attachmentsNow(evaluationId: Long): List<AttachmentEntity>
+
+    @Query("SELECT * FROM attachment WHERE localUuid=:localUuid LIMIT 1")
+    suspend fun attachmentNow(localUuid: String): AttachmentEntity?
+
+    @Query("SELECT * FROM attachment WHERE dirty=1 ORDER BY createdAt")
+    suspend fun dirtyAttachments(): List<AttachmentEntity>
+
+    @Query("SELECT * FROM risk_draft WHERE evaluationId=:evaluationId AND deleted=0 ORDER BY updatedAt DESC")
     fun riskDrafts(evaluationId: Long): Flow<List<RiskDraftEntity>>
+
+    @Query("SELECT * FROM risk_draft WHERE evaluationId=:evaluationId")
+    suspend fun riskDraftsNow(evaluationId: Long): List<RiskDraftEntity>
+
+    @Query("SELECT * FROM risk_draft WHERE localUuid=:localUuid LIMIT 1")
+    suspend fun riskDraftNow(localUuid: String): RiskDraftEntity?
+
+    @Query("SELECT * FROM risk_draft WHERE dirty=1 ORDER BY updatedAt")
+    suspend fun dirtyRiskDrafts(): List<RiskDraftEntity>
+
+    @Query("SELECT (SELECT COUNT(*) FROM attachment WHERE dirty=1) + (SELECT COUNT(*) FROM risk_draft WHERE dirty=1)")
+    fun pendingArtifactCount(): Flow<Int>
 
     @Query("SELECT * FROM worker ORDER BY name")
     suspend fun workersNow(): List<WorkerEntity>
