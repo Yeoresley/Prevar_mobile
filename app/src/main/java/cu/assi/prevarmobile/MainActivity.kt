@@ -17,7 +17,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.google.zxing.integration.android.ScanIntentResult
+import com.journeyapps.barcodescanner.ScanIntentResult
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import cu.assi.prevarmobile.data.PrevarRepository
@@ -181,9 +181,10 @@ private fun HomeScreen(
                         status = result.message
                         syncing = false
                     }
-                },
-                text = { Text(if (syncing) "Sincronizando…" else "Sincronizar") }
-            )
+                }
+            ) {
+                Text(if (syncing) "Sincronizando…" else "Sincronizar")
+            }
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
