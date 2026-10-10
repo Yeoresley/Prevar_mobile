@@ -30,12 +30,37 @@ android {
         buildConfig = true
     }
 
+    val releaseKeystore = System.getenv("PREVAR_ANDROID_KEYSTORE")
+    val releaseStorePassword = System.getenv("PREVAR_ANDROID_STORE_PASSWORD")
+    val releaseKeyAlias = System.getenv("PREVAR_ANDROID_KEY_ALIAS")
+    val releaseKeyPassword = System.getenv("PREVAR_ANDROID_KEY_PASSWORD")
+    val releaseSigningReady = listOf(
+        releaseKeystore,
+        releaseStorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword
+    ).all { !it.isNullOrBlank() }
+
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("prevarRelease") {
+                storeFile = file(releaseKeystore!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
         }
         getByName("release") {
             manifestPlaceholders["usesCleartextTraffic"] = "false"
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("prevarRelease")
+            }
         }
     }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
