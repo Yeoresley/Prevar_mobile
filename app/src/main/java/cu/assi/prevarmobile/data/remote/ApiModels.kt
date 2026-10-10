@@ -76,6 +76,38 @@ data class MeasureDto(
     @SerializedName("server_version") val serverVersion: Long = 1
 )
 
+data class RiskDraftDto(
+    @SerializedName("mobile_uuid") val mobileUuid: String,
+    @SerializedName("evaluation_id") val evaluationId: Long,
+    @SerializedName("object_text") val objectText: String,
+    @SerializedName("risk_text") val riskText: String,
+    val probability: Int,
+    val impact: Int,
+    val result: Int,
+    val level: Int,
+    val argument: String? = null,
+    val version: Long = 1,
+    @SerializedName("updated_at") val updatedAt: String? = null
+)
+
+data class AttachmentDto(
+    @SerializedName("mobile_uuid") val mobileUuid: String,
+    @SerializedName("evaluation_id") val evaluationId: Long,
+    @SerializedName("file_name") val fileName: String,
+    @SerializedName("mime_type") val mimeType: String,
+    @SerializedName("size_bytes") val sizeBytes: Long,
+    val sha256: String,
+    val version: Long = 1,
+    @SerializedName("updated_at") val updatedAt: String? = null
+)
+
+data class AttachmentSyncResponse(
+    @SerializedName("mobile_uuid") val mobileUuid: String,
+    @SerializedName("evaluation_id") val evaluationId: Long? = null,
+    @SerializedName("server_version") val serverVersion: Long = 1,
+    val deleted: Boolean? = null
+)
+
 data class WorkerDto(val id: Long, val nombre: String, val cargo: String? = null)
 
 data class SettingsDto(@SerializedName("min_chars") val minChars: Int = 100)
@@ -84,6 +116,8 @@ data class PullResponse(
     val questionnaire: QuestionnaireDto,
     val evaluations: List<EvaluationDto>,
     val measures: List<MeasureDto>,
+    @SerializedName("risk_drafts") val riskDrafts: List<RiskDraftDto> = emptyList(),
+    val attachments: List<AttachmentDto> = emptyList(),
     val workers: List<WorkerDto>,
     val settings: SettingsDto
 )
