@@ -81,3 +81,30 @@ data class SyncStateEntity(
     @PrimaryKey val key: String,
     val value: String
 )
+
+
+@Entity(tableName = "attachment")
+data class AttachmentEntity(
+    @PrimaryKey val localUuid: String,
+    val evaluationId: Long,
+    val fileName: String,
+    val mimeType: String,
+    val localPath: String,
+    val sizeBytes: Long,
+    val sha256: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "risk_draft")
+data class RiskDraftEntity(
+    @PrimaryKey val localUuid: String,
+    val evaluationId: Long,
+    val objectText: String,
+    val riskText: String,
+    val probability: Int,
+    val impact: Int,
+    val result: Int,
+    val level: Int,
+    val argument: String,
+    val updatedAt: Long = System.currentTimeMillis()
+)
