@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import cu.assi.prevarmobile.security.DatabaseKeyProvider
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
@@ -25,6 +27,37 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): PrevarDao
 
     companion object {
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS attachment (
+                        localUuid TEXT NOT NULL PRIMARY KEY,
+                        evaluationId INTEGER NOT NULL,
+                        fileName TEXT NOT NULL,
+                        mimeType TEXT NOT NULL,
+                        localPath TEXT NOT NULL,
+                        sizeBytes INTEGER NOT NULL,
+                        sha256 TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )""".trimIndent()
+                )
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS risk_draft (
+                        localUuid TEXT NOT NULL PRIMARY KEY,
+                        evaluationId INTEGER NOT NULL,
+                        objectText TEXT NOT NULL,
+                        riskText TEXT NOT NULL,
+                        probability INTEGER NOT NULL,
+                        impact INTEGER NOT NULL,
+                        result INTEGER NOT NULL,
+                        level INTEGER NOT NULL,
+                        argument TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )""".trimIndent()
+                )
+            }
+        }
+
         @Volatile private var INSTANCE: AppDatabase? = null
 
         fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
@@ -33,7 +66,7 @@ abstract class AppDatabase : RoomDatabase() {
             val factory = SupportOpenHelperFactory(passphrase)
             Room.databaseBuilder(context, AppDatabase::class.java, "prevar_mobile.db")
                 .openHelperFactory(factory)
-                .fallbackToDestructiveMigration()
+                .addMigrations(MIGRATION_1_2)
                 .build()
                 .also { INSTANCE = it }
         }
