@@ -505,12 +505,17 @@ private fun EvaluationScreen(
                 AttachmentCard(
                     attachment = attachment,
                     onOpen = {
-                        runCatching {
-                            val intent = Intent(Intent.ACTION_VIEW)
-                                .setDataAndType(repository.attachmentUri(attachment), attachment.mimeType)
-                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            context.startActivity(intent)
-                        }.onFailure { message = "No hay una aplicación disponible para abrir este adjunto." }
+                        scope.launch {
+                            runCatching {
+                                val uri = repository.attachmentUri(attachment)
+                                val intent = Intent(Intent.ACTION_VIEW)
+                                    .setDataAndType(uri, attachment.mimeType)
+                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                context.startActivity(intent)
+                            }.onFailure {
+                                message = it.message ?: "No hay una aplicación disponible para abrir este adjunto."
+                            }
+                        }
                     },
                     onDelete = { scope.launch { repository.deleteAttachment(attachment) } }
                 )
