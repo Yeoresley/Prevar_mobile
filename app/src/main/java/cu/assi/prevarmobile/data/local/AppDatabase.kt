@@ -20,7 +20,7 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
         AttachmentEntity::class,
         RiskDraftEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -58,6 +58,17 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE attachment ADD COLUMN serverVersion INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE attachment ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE attachment ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE risk_draft ADD COLUMN serverVersion INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE risk_draft ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE risk_draft ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         @Volatile private var INSTANCE: AppDatabase? = null
 
         fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
@@ -66,7 +77,7 @@ abstract class AppDatabase : RoomDatabase() {
             val factory = SupportOpenHelperFactory(passphrase)
             Room.databaseBuilder(context, AppDatabase::class.java, "prevar_mobile.db")
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
                 .also { INSTANCE = it }
         }
