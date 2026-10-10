@@ -29,6 +29,12 @@ interface PrevarDao {
     @Query("SELECT * FROM worker ORDER BY name")
     fun workers(): Flow<List<WorkerEntity>>
 
+    @Query("SELECT * FROM attachment WHERE evaluationId=:evaluationId ORDER BY createdAt DESC")
+    fun attachments(evaluationId: Long): Flow<List<AttachmentEntity>>
+
+    @Query("SELECT * FROM risk_draft WHERE evaluationId=:evaluationId ORDER BY updatedAt DESC")
+    fun riskDrafts(evaluationId: Long): Flow<List<RiskDraftEntity>>
+
     @Query("SELECT * FROM worker ORDER BY name")
     suspend fun workersNow(): List<WorkerEntity>
 
@@ -70,6 +76,18 @@ interface PrevarDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMeasure(row: MeasureEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAttachment(row: AttachmentEntity)
+
+    @Query("DELETE FROM attachment WHERE localUuid=:localUuid")
+    suspend fun deleteAttachment(localUuid: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertRiskDraft(row: RiskDraftEntity)
+
+    @Query("DELETE FROM risk_draft WHERE localUuid=:localUuid")
+    suspend fun deleteRiskDraft(localUuid: String)
 
     @Query("DELETE FROM outbox WHERE uuid IN (:uuids)")
     suspend fun deleteOutbox(uuids: List<String>)
