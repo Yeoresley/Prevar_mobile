@@ -17,6 +17,8 @@ required = [
 missing=[x for x in required if not (root/x).exists()]
 if missing: raise SystemExit('Faltan archivos: '+str(missing))
 text='\n'.join(p.read_text(encoding='utf-8') for p in root.rglob('*.kt'))
+text += '\n' + (root/'app/src/main/AndroidManifest.xml').read_text(encoding='utf-8')
+text += '\n' + (root/'app/build.gradle.kts').read_text(encoding='utf-8')
 for forbidden in ['PrevarDB#2026!', 'F_PASSWORD', 'mysql://', 'mariadb://', 'TrustAll', 'ALLOW_ALL_HOSTNAME_VERIFIER']:
     if forbidden in text: raise SystemExit('Secreto/conexión directa detectada: '+forbidden)
 for marker in ['evaluation.update','measure.upsert','PREVAR-MOBILE-PAIR-1','WorkManager','SQLCipher','AttachmentVault','RiskMatrix','ServerUrlPolicy','usesCleartextTraffic']:
