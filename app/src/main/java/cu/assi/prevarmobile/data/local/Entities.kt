@@ -92,6 +92,9 @@ data class AttachmentEntity(
     val localPath: String,
     val sizeBytes: Long,
     val sha256: String,
+    val serverVersion: Long = 0,
+    val dirty: Boolean = true,
+    val deleted: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -106,5 +109,8 @@ data class RiskDraftEntity(
     val result: Int,
     val level: Int,
     val argument: String,
+    val serverVersion: Long = 0,
+    val dirty: Boolean = true,
+    val deleted: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis()
 )
