@@ -66,6 +66,9 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug --stacktrace
 
+      - name: Build release APK (unsigned security validation)
+        run: gradle --no-daemon assembleRelease --stacktrace
+
       - name: Upload PREVAR Mobile APK
         uses: actions/upload-artifact@v4
         with:
