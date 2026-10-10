@@ -67,7 +67,7 @@ class AttachmentVault(private val context: Context) {
     fun storeFile(source: File, destination: File, maxBytes: Long): StoredFile =
         source.inputStream().use { store(it, destination, maxBytes) }
 
-    fun decryptedUri(encryptedFile: File, displayName: String): Uri {
+    fun decryptedFile(encryptedFile: File, displayName: String): File {
         require(encryptedFile.exists()) { "El adjunto local ya no existe." }
         cleanupCache()
         val cacheRoot = File(context.cacheDir, "prevar_attachment_cache").apply { mkdirs() }
@@ -81,6 +81,11 @@ class AttachmentVault(private val context: Context) {
                 target.outputStream().use { output -> decrypted.copyTo(output) }
             }
         }
+        return target
+    }
+
+    fun decryptedUri(encryptedFile: File, displayName: String): Uri {
+        val target = decryptedFile(encryptedFile, displayName)
         return FileProvider.getUriForFile(context, "${context.packageName}.files", target)
     }
 
