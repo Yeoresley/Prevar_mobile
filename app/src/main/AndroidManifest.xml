@@ -9,6 +9,7 @@
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="PREVAR Mobile"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:usesCleartextTraffic="${usesCleartextTraffic}"
         android:theme="@style/Theme.PrevarMobile">
         <provider
