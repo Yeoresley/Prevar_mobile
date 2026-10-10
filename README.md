@@ -1,4 +1,4 @@
-# PREVAR Mobile Android MVP 0.2.0
+# PREVAR Mobile Android MVP 0.3.0
 
 Proyecto Android nativo para trabajo de autocontrol offline.
 
@@ -38,14 +38,14 @@ Implementados:
 - WorkManager con reintento cuando hay conectividad;
 - resolución visual de conflictos 409 entre PREVAR Web y móvil;
 - manejo explícito de pérdida de conectividad sin descartar cambios pendientes;
-- adjuntos, fotografías y PDF offline, cifrados con Android Keystore y almacenados en el espacio privado de la aplicación;
-- captura de fotografía desde cámara, selección múltiple de imágenes/PDF, apertura controlada y eliminación local;
-- borradores de riesgo alineados con PREVAR (objeto, riesgo, probabilidad, impacto, resultado, nivel y argumentación);
+- adjuntos, fotografías y PDF offline, cifrados con Android Keystore y sincronizados con PREVAR Web;
+- captura de fotografía desde cámara, selección múltiple de imágenes/PDF, apertura controlada, descarga bajo demanda y eliminación sincronizada;
+- borradores de riesgo alineados con PREVAR (objeto, riesgo, probabilidad, impacto, resultado, nivel y argumentación), con sincronización bidireccional;
 - matriz de riesgo PREVAR: 1–2 BAJO, 3–4 MEDIO, 6–9 ALTO;
 - política HTTPS segura por defecto: release rechaza HTTP; debug solo permite HTTP en LAN privada;
 - cliente OkHttp sin logging en release y con TLS moderno para HTTPS.
 
-Los adjuntos y borradores de riesgo de esta versión son artefactos offline locales asociados a la evaluación; no se envían al servidor mediante operaciones no soportadas por la API actual.
+Los adjuntos y borradores de riesgo se conservan offline y se sincronizan cuando PREVAR vuelve a estar disponible. Los binarios permanecen cifrados en el teléfono y solo se descifran temporalmente para abrirlos o transmitirlos.
 
 
 ## Compilación online
@@ -56,10 +56,18 @@ El repositorio incluye `.github/workflows/android-debug.yml`. En GitHub use **Ac
 Consulte `BUILD_ONLINE.md` para el procedimiento completo.
 
 
-## Seguridad 0.2.0
+## Seguridad 0.3.0
 
 - La base Room continúa cifrada con SQLCipher.
 - Los adjuntos se cifran individualmente con AES-GCM y una clave no exportable de Android Keystore.
 - Los archivos solo se descifran temporalmente en caché cuando el usuario pulsa **Abrir**.
 - Se bloquean MIME no permitidos, adjuntos mayores de 25 MB, traversal de nombres de archivo, credenciales embebidas en URLs y HTTP público.
 - La migración de base 1→2 conserva los datos existentes.
+
+
+## Sincronización 0.3.0
+
+- Los borradores de riesgo usan operaciones idempotentes `risk_draft.upsert` / `risk_draft.delete`.
+- Las evidencias binarias usan `POST/GET/DELETE attachment`, SHA-256 y límite de 25 MB.
+- Los adjuntos remotos se descargan bajo demanda y vuelven a cifrarse inmediatamente en el almacén privado del dispositivo.
+- La migración Room 2→3 conserva los datos offline existentes y añade estado de sincronización.
