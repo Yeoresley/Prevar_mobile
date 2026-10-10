@@ -17,7 +17,10 @@ import cu.assi.prevarmobile.domain.ServerUrlPolicy
 import cu.assi.prevarmobile.security.AttachmentVault
 import cu.assi.prevarmobile.security.SecureStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -34,7 +37,9 @@ class PrevarRepository(
     private val attachmentVault = AttachmentVault(context)
 
     val questionnaires: Flow<List<QuestionnaireEntity>> = dao.questionnaires()
-    val pendingCount: Flow<Int> = dao.pendingCount()
+    val pendingCount: Flow<Int> = combine(dao.pendingCount(), dao.pendingArtifactCount()) { outbox, artifacts ->
+        outbox + artifacts
+    }
     val lastSync: Flow<String?> = dao.stateFlow("last_sync")
     val lastError: Flow<String?> = dao.stateFlow("last_error")
     val conflict: Flow<SyncConflict?> = dao.stateFlow("sync_conflict").map { raw ->
@@ -284,14 +289,57 @@ class PrevarRepository(
         ).also { dao.upsertAttachment(it) }
     }
 
-    fun attachmentUri(attachment: AttachmentEntity): Uri {
-        val file = safeAttachmentFile(attachment.localPath)
-        return attachmentVault.decryptedUri(file, AttachmentPolicy.sanitizeFileName(attachment.fileName))
+    suspend fun attachmentUri(attachment: AttachmentEntity): Uri {
+        var current = dao.attachmentNow(attachment.localUuid) ?: attachment
+        val existing = current.localPath.takeIf { it.isNotBlank() }?.let { path ->
+            runCatching { safeAttachmentFile(path) }.getOrNull()?.takeIf { it.isFile }
+        }
+        if (existing == null) {
+            val base = store.apiUrl ?: error("El móvil no está vinculado a PREVAR.")
+            if (store.token.isNullOrBlank()) error("El token de vinculación no está disponible.")
+            val api = apiFactory.create(base, authenticated = true)
+            val response = api.downloadAttachment(current.localUuid)
+            if (!response.isSuccessful) error("PREVAR no pudo descargar el adjunto (HTTP ${response.code()}).")
+            val body = response.body() ?: error("PREVAR devolvió un adjunto vacío.")
+            val destination = File(attachmentsDirectory(), "${current.localUuid}.enc")
+            val stored = body.byteStream().use {
+                attachmentVault.store(it, destination, AttachmentPolicy.MAX_BYTES)
+            }
+            require(stored.sha256.equals(current.sha256, ignoreCase = true)) {
+                destination.delete()
+                "El adjunto descargado no supera la verificación de integridad."
+            }
+            current = current.copy(
+                localPath = stored.file.absolutePath,
+                sizeBytes = stored.sizeBytes,
+                sha256 = stored.sha256,
+                dirty = false,
+                deleted = false
+            )
+            dao.upsertAttachment(current)
+        }
+        val encrypted = safeAttachmentFile(current.localPath)
+        return attachmentVault.decryptedUri(
+            encrypted,
+            "${current.localUuid}_${AttachmentPolicy.sanitizeFileName(current.fileName)}"
+        )
     }
 
     suspend fun deleteAttachment(attachment: AttachmentEntity) {
-        runCatching { safeAttachmentFile(attachment.localPath).delete() }
-        dao.deleteAttachment(attachment.localUuid)
+        val current = dao.attachmentNow(attachment.localUuid) ?: attachment
+        if (current.serverVersion <= 0L) {
+            current.localPath.takeIf { it.isNotBlank() }?.let { path ->
+                runCatching { safeAttachmentFile(path).delete() }
+            }
+            dao.deleteAttachment(current.localUuid)
+        } else {
+            dao.upsertAttachment(
+                current.copy(
+                    dirty = true,
+                    deleted = true
+                )
+            )
+        }
     }
 
     suspend fun saveRiskDraft(
@@ -307,8 +355,10 @@ class PrevarRepository(
         require(objectText.trim().length >= 5) { "Describa el objeto u objetivo de control." }
         require(riskText.trim().length >= 5) { "Describa el riesgo identificado." }
         val assessment = RiskMatrix.assess(probability, impact)
+        val uuidValue = localUuid ?: UUID.randomUUID().toString()
+        val current = localUuid?.let { dao.riskDraftNow(it) }
         val entity = RiskDraftEntity(
-            localUuid = localUuid ?: UUID.randomUUID().toString(),
+            localUuid = uuidValue,
             evaluationId = evaluationId,
             objectText = objectText.trim(),
             riskText = riskText.trim(),
@@ -317,6 +367,9 @@ class PrevarRepository(
             result = assessment.result,
             level = assessment.level,
             argument = argument.trim(),
+            serverVersion = current?.serverVersion ?: 0,
+            dirty = true,
+            deleted = false,
             updatedAt = System.currentTimeMillis()
         )
         dao.upsertRiskDraft(entity)
@@ -324,7 +377,18 @@ class PrevarRepository(
     }
 
     suspend fun deleteRiskDraft(draft: RiskDraftEntity) {
-        dao.deleteRiskDraft(draft.localUuid)
+        val current = dao.riskDraftNow(draft.localUuid) ?: draft
+        if (current.serverVersion <= 0L) {
+            dao.deleteRiskDraft(current.localUuid)
+        } else {
+            dao.upsertRiskDraft(
+                current.copy(
+                    dirty = true,
+                    deleted = true,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+        }
     }
 
     private fun attachmentsDirectory(): File =
@@ -350,6 +414,9 @@ class PrevarRepository(
                 dao.deleteOutbox(pending.map { it.uuid })
             }
 
+            syncRiskDrafts(api)
+            syncAttachments(api)
+
             val listEnvelope = api.questionnaires()
             val remoteList = listEnvelope.data ?: error(listEnvelope.error ?: "No fue posible obtener los autocontroles.")
             dao.upsertQuestionnaires(remoteList.map { it.toEntity() })
@@ -362,6 +429,8 @@ class PrevarRepository(
                     measures = pull.measures.map { it.toEntity() },
                     workers = pull.workers.map { WorkerEntity(it.id, it.nombre, it.cargo) }
                 )
+                mergeRemoteRiskDrafts(pull.riskDrafts)
+                mergeRemoteAttachments(pull.attachments)
                 dao.putState(SyncStateEntity("min_chars", pull.settings.minChars.toString()))
             }
             val now = java.time.OffsetDateTime.now().toString()
@@ -388,6 +457,155 @@ class PrevarRepository(
             }
             dao.putState(SyncStateEntity("last_error", message))
             SyncResult(false, message)
+        }
+    }
+
+    private suspend fun syncRiskDrafts(api: PrevarApi) {
+        val dirty = dao.dirtyRiskDrafts()
+        if (dirty.isEmpty()) return
+        val opByUuid = linkedMapOf<String, RiskDraftEntity>()
+        val operations = dirty.map { draft ->
+            val opUuid = UUID.nameUUIDFromBytes(
+                "risk:${draft.localUuid}:${draft.updatedAt}:${draft.deleted}".toByteArray(Charsets.UTF_8)
+            ).toString()
+            opByUuid[opUuid] = draft
+            JsonObject().apply {
+                addProperty("uuid", opUuid)
+                addProperty("kind", if (draft.deleted) "risk_draft.delete" else "risk_draft.upsert")
+                addProperty("mobile_uuid", draft.localUuid)
+                addProperty("evaluation_id", draft.evaluationId)
+                if (draft.serverVersion > 0) addProperty("base_version", draft.serverVersion)
+                if (!draft.deleted) {
+                    add("fields", JsonObject().apply {
+                        addProperty("object_text", draft.objectText)
+                        addProperty("risk_text", draft.riskText)
+                        addProperty("probability", draft.probability)
+                        addProperty("impact", draft.impact)
+                        addProperty("argument", draft.argument)
+                    })
+                }
+            }
+        }
+        val envelope = api.push(PushRequest(operations))
+        val data = envelope.data ?: error(envelope.error ?: "PREVAR rechazó los borradores de riesgo.")
+        val resultByUuid = data.results.associateBy { it.uuid }
+        opByUuid.forEach { (opUuid, draft) ->
+            val result = resultByUuid[opUuid] ?: error("PREVAR no confirmó el borrador de riesgo ${draft.localUuid}.")
+            if (draft.deleted) {
+                dao.deleteRiskDraft(draft.localUuid)
+            } else {
+                dao.upsertRiskDraft(
+                    draft.copy(
+                        serverVersion = result.serverVersion ?: maxOf(1L, draft.serverVersion),
+                        dirty = false,
+                        deleted = false
+                    )
+                )
+            }
+        }
+    }
+
+    private suspend fun syncAttachments(api: PrevarApi) {
+        dao.dirtyAttachments().forEach { attachment ->
+            if (attachment.deleted) {
+                if (attachment.serverVersion > 0) {
+                    val envelope = api.deleteAttachment(attachment.localUuid)
+                    if (!envelope.ok) error(envelope.error ?: "PREVAR rechazó la eliminación del adjunto.")
+                }
+                attachment.localPath.takeIf { it.isNotBlank() }?.let { path ->
+                    runCatching { safeAttachmentFile(path).delete() }
+                }
+                dao.deleteAttachment(attachment.localUuid)
+            } else {
+                val encrypted = safeAttachmentFile(attachment.localPath)
+                val clear = attachmentVault.decryptedFile(
+                    encrypted,
+                    "upload_${attachment.localUuid}_${AttachmentPolicy.sanitizeFileName(attachment.fileName)}"
+                )
+                try {
+                    val body = clear.asRequestBody(attachment.mimeType.toMediaType())
+                    val envelope = api.uploadAttachment(
+                        evaluationId = attachment.evaluationId,
+                        mobileUuid = attachment.localUuid,
+                        fileName = attachment.fileName,
+                        mimeType = attachment.mimeType,
+                        sha256 = attachment.sha256,
+                        body = body
+                    )
+                    val data = envelope.data ?: error(envelope.error ?: "PREVAR rechazó el adjunto.")
+                    dao.upsertAttachment(
+                        attachment.copy(
+                            serverVersion = data.serverVersion,
+                            dirty = false,
+                            deleted = false
+                        )
+                    )
+                } finally {
+                    clear.delete()
+                }
+            }
+        }
+    }
+
+    private suspend fun mergeRemoteRiskDrafts(remote: List<RiskDraftDto>) {
+        remote.groupBy { it.evaluationId }.forEach { (evaluationId, rows) ->
+            val local = dao.riskDraftsNow(evaluationId)
+            val remoteIds = rows.map { it.mobileUuid }.toSet()
+            local.filter { !it.dirty && it.serverVersion > 0 && it.localUuid !in remoteIds }
+                .forEach { dao.deleteRiskDraft(it.localUuid) }
+            rows.forEach { dto ->
+                val current = dao.riskDraftNow(dto.mobileUuid)
+                if (current?.dirty == true) return@forEach
+                dao.upsertRiskDraft(
+                    RiskDraftEntity(
+                        localUuid = dto.mobileUuid,
+                        evaluationId = dto.evaluationId,
+                        objectText = dto.objectText,
+                        riskText = dto.riskText,
+                        probability = dto.probability,
+                        impact = dto.impact,
+                        result = dto.result,
+                        level = dto.level,
+                        argument = dto.argument.orEmpty(),
+                        serverVersion = dto.version,
+                        dirty = false,
+                        deleted = false,
+                        updatedAt = current?.updatedAt ?: System.currentTimeMillis()
+                    )
+                )
+            }
+        }
+    }
+
+    private suspend fun mergeRemoteAttachments(remote: List<AttachmentDto>) {
+        remote.groupBy { it.evaluationId }.forEach { (evaluationId, rows) ->
+            val local = dao.attachmentsNow(evaluationId)
+            val remoteIds = rows.map { it.mobileUuid }.toSet()
+            local.filter { !it.dirty && it.serverVersion > 0 && it.localUuid !in remoteIds }.forEach { row ->
+                row.localPath.takeIf { it.isNotBlank() }?.let { path ->
+                    runCatching { safeAttachmentFile(path).delete() }
+                }
+                dao.deleteAttachment(row.localUuid)
+            }
+            rows.forEach { dto ->
+                val current = dao.attachmentNow(dto.mobileUuid)
+                if (current?.dirty == true) return@forEach
+                dao.upsertAttachment(
+                    AttachmentEntity(
+                        localUuid = dto.mobileUuid,
+                        evaluationId = dto.evaluationId,
+                        fileName = dto.fileName,
+                        mimeType = dto.mimeType,
+                        localPath = current?.localPath.orEmpty(),
+                        sizeBytes = dto.sizeBytes,
+                        sha256 = dto.sha256,
+                        serverVersion = dto.version,
+                        dirty = false,
+                        deleted = false,
+                        createdAt = current?.createdAt ?: System.currentTimeMillis()
+                    )
+                )
+            }
         }
     }
 
