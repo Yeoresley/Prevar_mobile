@@ -1,18 +1,30 @@
 package cu.assi.prevarmobile.data
 
+import android.content.Context
+import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
+import androidx.core.content.FileProvider
+import cu.assi.prevarmobile.BuildConfig
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import cu.assi.prevarmobile.data.local.*
 import cu.assi.prevarmobile.data.remote.*
 import cu.assi.prevarmobile.domain.EvaluationValidator
+import cu.assi.prevarmobile.domain.RiskMatrix
+import cu.assi.prevarmobile.domain.ServerUrlPolicy
 import cu.assi.prevarmobile.security.SecureStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import java.io.File
+import java.security.MessageDigest
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.UUID
 import retrofit2.HttpException
 
 class PrevarRepository(
+    private val context: Context,
     private val dao: PrevarDao,
     private val store: SecureStore,
     private val apiFactory: ApiFactory,
@@ -31,6 +43,8 @@ class PrevarRepository(
     fun evaluations(questionnaireId: Long): Flow<List<EvaluationEntity>> = dao.evaluations(questionnaireId)
     fun evaluation(id: Long): Flow<EvaluationEntity?> = dao.evaluation(id)
     fun measures(evaluationId: Long): Flow<List<MeasureEntity>> = dao.measures(evaluationId)
+    fun attachments(evaluationId: Long): Flow<List<AttachmentEntity>> = dao.attachments(evaluationId)
+    fun riskDrafts(evaluationId: Long): Flow<List<RiskDraftEntity>> = dao.riskDrafts(evaluationId)
     fun workers(): Flow<List<WorkerEntity>> = dao.workers()
 
     fun isPaired(): Boolean = !store.apiUrl.isNullOrBlank() && !store.token.isNullOrBlank()
@@ -38,8 +52,7 @@ class PrevarRepository(
     fun apiUrl(): String = store.apiUrl.orEmpty()
 
     suspend fun pair(apiUrl: String, secret: String? = null, code: String? = null) {
-        val normalized = apiUrl.trim().trimEnd('/')
-        require(normalized.startsWith("http://") || normalized.startsWith("https://")) { "Dirección del servidor no válida." }
+        val normalized = ServerUrlPolicy.normalize(apiUrl, allowPrivateHttp = BuildConfig.DEBUG)
         val api = apiFactory.create(normalized, authenticated = false)
         val envelope = try {
             api.pair(
@@ -194,6 +207,149 @@ class PrevarRepository(
         val key = "measure:${measure.localUuid}"
         dao.deleteOutboxForEntity(key)
         dao.upsertOutbox(OutboxEntity(opUuid, key, "measure.delete", gson.toJson(op)))
+    }
+
+    suspend fun importAttachment(evaluationId: Long, uri: Uri): AttachmentEntity {
+        require(dao.evaluationNow(evaluationId) != null) { "La evaluación ya no está disponible." }
+        val resolver = context.contentResolver
+        val mime = resolver.getType(uri).orEmpty().ifBlank { "application/octet-stream" }
+        require(mime.startsWith("image/") || mime == "application/pdf") {
+            "Solo se admiten imágenes y documentos PDF."
+        }
+
+        var displayName = "adjunto"
+        var declaredSize: Long? = null
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (nameIndex >= 0) displayName = cursor.getString(nameIndex).orEmpty().ifBlank { "adjunto" }
+                if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) declaredSize = cursor.getLong(sizeIndex)
+            }
+        }
+        require((declaredSize ?: 0L) <= MAX_ATTACHMENT_BYTES) { "El adjunto supera el límite de 25 MB." }
+
+        val uuid = UUID.randomUUID().toString()
+        val safeName = sanitizeFileName(displayName)
+        val destination = File(attachmentsDirectory(), "${uuid}_${safeName}")
+        resolver.openInputStream(uri)?.use { input ->
+            destination.outputStream().use { output ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var total = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count <= 0) break
+                    total += count
+                    require(total <= MAX_ATTACHMENT_BYTES) { "El adjunto supera el límite de 25 MB." }
+                    output.write(buffer, 0, count)
+                }
+            }
+        } ?: error("No fue posible leer el adjunto seleccionado.")
+
+        val entity = AttachmentEntity(
+            localUuid = uuid,
+            evaluationId = evaluationId,
+            fileName = safeName,
+            mimeType = mime,
+            localPath = destination.absolutePath,
+            sizeBytes = destination.length(),
+            sha256 = sha256(destination)
+        )
+        dao.upsertAttachment(entity)
+        return entity
+    }
+
+    fun preparePhotoCapture(): PendingPhotoCapture {
+        val uuid = UUID.randomUUID().toString()
+        val file = File(attachmentsDirectory(), "${uuid}_camera.jpg")
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+        return PendingPhotoCapture(uuid, file.absolutePath, uri)
+    }
+
+    suspend fun commitCapturedPhoto(evaluationId: Long, capture: PendingPhotoCapture): AttachmentEntity {
+        require(dao.evaluationNow(evaluationId) != null) { "La evaluación ya no está disponible." }
+        val file = File(capture.localPath)
+        require(file.exists() && file.length() > 0) { "La cámara no generó una fotografía válida." }
+        require(file.length() <= MAX_ATTACHMENT_BYTES) { "La fotografía supera el límite de 25 MB." }
+        val label = "Foto_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".jpg"
+        val entity = AttachmentEntity(
+            localUuid = capture.localUuid,
+            evaluationId = evaluationId,
+            fileName = label,
+            mimeType = "image/jpeg",
+            localPath = file.absolutePath,
+            sizeBytes = file.length(),
+            sha256 = sha256(file)
+        )
+        dao.upsertAttachment(entity)
+        return entity
+    }
+
+    fun attachmentUri(attachment: AttachmentEntity): Uri =
+        FileProvider.getUriForFile(context, "${context.packageName}.files", File(attachment.localPath))
+
+    suspend fun deleteAttachment(attachment: AttachmentEntity) {
+        val file = File(attachment.localPath)
+        val root = attachmentsDirectory().canonicalFile
+        val target = runCatching { file.canonicalFile }.getOrNull()
+        if (target != null && target.path.startsWith(root.path + File.separator)) {
+            target.delete()
+        }
+        dao.deleteAttachment(attachment.localUuid)
+    }
+
+    suspend fun saveRiskDraft(
+        evaluationId: Long,
+        objectText: String,
+        riskText: String,
+        probability: Int,
+        impact: Int,
+        argument: String,
+        localUuid: String? = null
+    ): RiskDraftEntity {
+        require(dao.evaluationNow(evaluationId) != null) { "La evaluación ya no está disponible." }
+        require(objectText.trim().length >= 5) { "Describa el objeto u objetivo de control." }
+        require(riskText.trim().length >= 5) { "Describa el riesgo identificado." }
+        val assessment = RiskMatrix.assess(probability, impact)
+        val entity = RiskDraftEntity(
+            localUuid = localUuid ?: UUID.randomUUID().toString(),
+            evaluationId = evaluationId,
+            objectText = objectText.trim(),
+            riskText = riskText.trim(),
+            probability = probability,
+            impact = impact,
+            result = assessment.result,
+            level = assessment.level,
+            argument = argument.trim(),
+            updatedAt = System.currentTimeMillis()
+        )
+        dao.upsertRiskDraft(entity)
+        return entity
+    }
+
+    suspend fun deleteRiskDraft(draft: RiskDraftEntity) {
+        dao.deleteRiskDraft(draft.localUuid)
+    }
+
+    private fun attachmentsDirectory(): File =
+        File(context.filesDir, "prevar_attachments").apply { if (!exists()) mkdirs() }
+
+    private fun sanitizeFileName(value: String): String {
+        val cleaned = value.replace(Regex("[^A-Za-z0-9._áéíóúÁÉÍÓÚñÑ -]"), "_").trim()
+        return cleaned.take(120).ifBlank { "adjunto" }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count <= 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     suspend fun synchronize(): SyncResult {
@@ -369,6 +525,14 @@ class PrevarRepository(
         dirty = false
     )
 }
+
+data class PendingPhotoCapture(
+    val localUuid: String,
+    val localPath: String,
+    val uri: Uri
+)
+
+private const val MAX_ATTACHMENT_BYTES = 25L * 1024L * 1024L
 
 data class ConflictVersion(
     val result: Int,
