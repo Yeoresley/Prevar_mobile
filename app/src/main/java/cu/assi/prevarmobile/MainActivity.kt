@@ -1,9 +1,11 @@
 package cu.assi.prevarmobile
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
@@ -23,13 +26,17 @@ import com.journeyapps.barcodescanner.ScanIntentResult
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import cu.assi.prevarmobile.data.ConflictVersion
+import cu.assi.prevarmobile.data.PendingPhotoCapture
 import cu.assi.prevarmobile.data.PrevarRepository
 import cu.assi.prevarmobile.data.SyncConflict
+import cu.assi.prevarmobile.data.local.AttachmentEntity
 import cu.assi.prevarmobile.data.local.EvaluationEntity
 import cu.assi.prevarmobile.data.local.MeasureEntity
 import cu.assi.prevarmobile.data.local.QuestionnaireEntity
+import cu.assi.prevarmobile.data.local.RiskDraftEntity
 import cu.assi.prevarmobile.data.local.WorkerEntity
 import cu.assi.prevarmobile.domain.EvaluationValidator
+import cu.assi.prevarmobile.domain.RiskMatrix
 import cu.assi.prevarmobile.sync.SyncScheduler
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -382,8 +389,11 @@ private fun EvaluationScreen(
     onBack: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val evaluation by repository.evaluation(evaluationId).collectAsStateWithLifecycle(null)
     val measures by repository.measures(evaluationId).collectAsStateWithLifecycle(emptyList())
+    val attachments by repository.attachments(evaluationId).collectAsStateWithLifecycle(emptyList())
+    val riskDrafts by repository.riskDrafts(evaluationId).collectAsStateWithLifecycle(emptyList())
     val workers by repository.workers().collectAsStateWithLifecycle(emptyList())
     val current = evaluation
     if (current == null) {
@@ -402,6 +412,35 @@ private fun EvaluationScreen(
     var amount by remember(current.id) { mutableStateOf(current.amount?.toString().orEmpty()) }
     var message by remember { mutableStateOf<String?>(null) }
     var showMeasureDialog by remember { mutableStateOf(false) }
+    var showRiskDialog by remember { mutableStateOf(false) }
+    var editingRisk by remember { mutableStateOf<RiskDraftEntity?>(null) }
+    var pendingPhoto by remember { mutableStateOf<PendingPhotoCapture?>(null) }
+
+    val attachmentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            scope.launch {
+                var imported = 0
+                var failed = 0
+                uris.forEach { uri ->
+                    runCatching { repository.importAttachment(current.id, uri) }
+                        .onSuccess { imported++ }
+                        .onFailure { failed++; message = it.message }
+                }
+                if (failed == 0) message = "$imported adjunto(s) guardado(s) offline."
+            }
+        }
+    }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val capture = pendingPhoto
+        pendingPhoto = null
+        if (capture != null && ok) {
+            scope.launch {
+                runCatching { repository.commitCapturedPhoto(current.id, capture) }
+                    .onSuccess { message = "Fotografía guardada offline." }
+                    .onFailure { message = it.message }
+            }
+        }
+    }
 
     Scaffold(topBar = {
         TopAppBar(
@@ -441,6 +480,39 @@ private fun EvaluationScreen(
                     OutlinedTextField(evidence, { evidence = it }, label = { Text("Evidencia / referencia documental") }, minLines = 2, modifier = Modifier.fillMaxWidth(), enabled = current.canEdit)
                 }
             }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Adjuntos / fotos / PDF offline (${attachments.size})", fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { attachmentPicker.launch(arrayOf("image/*", "application/pdf")) },
+                            enabled = current.canEdit
+                        ) { Text("Adjuntar") }
+                        OutlinedButton(
+                            onClick = {
+                                val capture = repository.preparePhotoCapture()
+                                pendingPhoto = capture
+                                camera.launch(capture.uri)
+                            },
+                            enabled = current.canEdit
+                        ) { Text("Tomar foto") }
+                    }
+                }
+            }
+            items(attachments, key = { it.localUuid }) { attachment ->
+                AttachmentCard(
+                    attachment = attachment,
+                    onOpen = {
+                        runCatching {
+                            val intent = Intent(Intent.ACTION_VIEW)
+                                .setDataAndType(repository.attachmentUri(attachment), attachment.mimeType)
+                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            context.startActivity(intent)
+                        }.onFailure { message = "No hay una aplicación disponible para abrir este adjunto." }
+                    },
+                    onDelete = { scope.launch { repository.deleteAttachment(attachment) } }
+                )
+            }
             if (result == 2) {
                 if (current.whatFails.isNotBlank()) item { InfoBlock("¿Qué se incumple?", current.whatFails) }
                 item { OutlinedTextField(causes, { causes = it }, label = { Text("Causas y condiciones") }, minLines = 4, modifier = Modifier.fillMaxWidth(), enabled = current.canEdit) }
@@ -466,6 +538,19 @@ private fun EvaluationScreen(
                 }
                 items(measures, key = { it.localUuid }) { measure ->
                     MeasureCard(measure, workers) { scope.launch { repository.deleteMeasure(measure) } }
+                }
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Borradores de riesgo (${riskDrafts.size})", fontWeight = FontWeight.SemiBold)
+                        OutlinedButton(onClick = { editingRisk = null; showRiskDialog = true }, enabled = current.canEdit) { Text("Adicionar") }
+                    }
+                }
+                items(riskDrafts, key = { it.localUuid }) { draft ->
+                    RiskDraftCard(
+                        draft = draft,
+                        onEdit = { editingRisk = draft; showRiskDialog = true },
+                        onDelete = { scope.launch { repository.deleteRiskDraft(draft) } }
+                    )
                 }
             }
             item {
@@ -500,6 +585,32 @@ private fun EvaluationScreen(
             }
         )
     }
+
+    if (showRiskDialog) {
+        RiskDraftDialog(
+            draft = editingRisk,
+            onDismiss = { showRiskDialog = false; editingRisk = null },
+            onSave = { objectText, riskText, probability, impact, argument ->
+                scope.launch {
+                    runCatching {
+                        repository.saveRiskDraft(
+                            evaluationId = current.id,
+                            objectText = objectText,
+                            riskText = riskText,
+                            probability = probability,
+                            impact = impact,
+                            argument = argument,
+                            localUuid = editingRisk?.localUuid
+                        )
+                    }.onSuccess {
+                        showRiskDialog = false
+                        editingRisk = null
+                        message = "Borrador de riesgo guardado offline."
+                    }.onFailure { message = it.message }
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -518,6 +629,102 @@ private fun MeasureCard(measure: MeasureEntity, workers: List<WorkerEntity>, onD
             TextButton(onClick = onDelete) { Text("Eliminar") }
         }
     }
+}
+
+@Composable
+private fun AttachmentCard(
+    attachment: AttachmentEntity,
+    onOpen: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card {
+        Column(Modifier.padding(12.dp)) {
+            Text(attachment.fileName, fontWeight = FontWeight.SemiBold)
+            Text(
+                "${attachment.mimeType} · ${attachment.sizeBytes / 1024} KB · SHA-256 ${attachment.sha256.take(12)}…",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Row {
+                TextButton(onClick = onOpen) { Text("Abrir") }
+                TextButton(onClick = onDelete) { Text("Eliminar") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RiskDraftCard(
+    draft: RiskDraftEntity,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(draft.objectText, fontWeight = FontWeight.SemiBold)
+            Text(draft.riskText)
+            Text(
+                "Probabilidad ${draft.probability} · Impacto ${draft.impact} · Resultado ${draft.result} · Nivel ${RiskMatrix.levelLabel(draft.level)}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            if (draft.argument.isNotBlank()) Text(draft.argument, style = MaterialTheme.typography.bodySmall)
+            Row {
+                TextButton(onClick = onEdit) { Text("Editar") }
+                TextButton(onClick = onDelete) { Text("Eliminar") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RiskDraftDialog(
+    draft: RiskDraftEntity?,
+    onDismiss: () -> Unit,
+    onSave: (String, String, Int, Int, String) -> Unit
+) {
+    var objectText by remember(draft?.localUuid) { mutableStateOf(draft?.objectText.orEmpty()) }
+    var riskText by remember(draft?.localUuid) { mutableStateOf(draft?.riskText.orEmpty()) }
+    var probability by remember(draft?.localUuid) { mutableIntStateOf(draft?.probability ?: 1) }
+    var impact by remember(draft?.localUuid) { mutableIntStateOf(draft?.impact ?: 1) }
+    var argument by remember(draft?.localUuid) { mutableStateOf(draft?.argument.orEmpty()) }
+    val assessment = remember(probability, impact) { RiskMatrix.assess(probability, impact) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (draft == null) "Nuevo borrador de riesgo" else "Editar borrador de riesgo") },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(objectText, { objectText = it }, label = { Text("Objeto / objetivo de control") }, minLines = 2)
+                OutlinedTextField(riskText, { riskText = it }, label = { Text("Riesgo identificado") }, minLines = 3)
+                Text("Probabilidad", fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (1..3).forEach { value ->
+                        FilterChip(selected = probability == value, onClick = { probability = value }, label = { Text(value.toString()) })
+                    }
+                }
+                Text("Impacto", fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (1..3).forEach { value ->
+                        FilterChip(selected = impact == value, onClick = { impact = value }, label = { Text(value.toString()) })
+                    }
+                }
+                Text(
+                    "Resultado: ${assessment.result} · Nivel: ${RiskMatrix.levelLabel(assessment.level)}",
+                    fontWeight = FontWeight.SemiBold
+                )
+                OutlinedTextField(argument, { argument = it }, label = { Text("Argumentación") }, minLines = 3)
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(objectText, riskText, probability, impact, argument) },
+                enabled = objectText.trim().length >= 5 && riskText.trim().length >= 5
+            ) { Text("Guardar") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
