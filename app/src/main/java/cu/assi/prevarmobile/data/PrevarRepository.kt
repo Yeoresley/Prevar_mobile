@@ -8,6 +8,7 @@ import cu.assi.prevarmobile.data.remote.*
 import cu.assi.prevarmobile.domain.EvaluationValidator
 import cu.assi.prevarmobile.security.SecureStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import java.util.UUID
 import retrofit2.HttpException
 
@@ -21,6 +22,11 @@ class PrevarRepository(
     val pendingCount: Flow<Int> = dao.pendingCount()
     val lastSync: Flow<String?> = dao.stateFlow("last_sync")
     val lastError: Flow<String?> = dao.stateFlow("last_error")
+    val conflict: Flow<SyncConflict?> = dao.stateFlow("sync_conflict").map { raw ->
+        runCatching {
+            raw?.takeIf { it.isNotBlank() }?.let { gson.fromJson(it, SyncConflict::class.java) }
+        }.getOrNull()
+    }
 
     fun evaluations(questionnaireId: Long): Flow<List<EvaluationEntity>> = dao.evaluations(questionnaireId)
     fun evaluation(id: Long): Flow<EvaluationEntity?> = dao.evaluation(id)
@@ -68,6 +74,7 @@ class PrevarRepository(
     suspend fun unpair() {
         store.clearPairing()
         dao.putState(SyncStateEntity("last_error", ""))
+        dao.putState(SyncStateEntity("sync_conflict", ""))
     }
 
     suspend fun minChars(): Int = dao.state("min_chars")?.toIntOrNull() ?: 100
@@ -219,12 +226,22 @@ class PrevarRepository(
             val now = java.time.OffsetDateTime.now().toString()
             dao.putState(SyncStateEntity("last_sync", now))
             dao.putState(SyncStateEntity("last_error", ""))
+            dao.putState(SyncStateEntity("sync_conflict", ""))
             SyncResult(true, "Sincronización completada.")
         } catch (error: Exception) {
             val message = if (error is HttpException) {
-                val apiError = parseHttpError(error)
-                if (error.code() == 409) "Conflicto de sincronización: ${apiError ?: "el registro cambió en PREVAR"}"
-                else apiError ?: "PREVAR respondió HTTP ${error.code()}."
+                val body = parseHttpErrorObject(error)
+                val apiError = body?.get("error")?.asString
+                if (error.code() == 409) {
+                    val stored = body?.let { storeEvaluationConflict(it) }
+                    if (stored != null) {
+                        "Conflicto pendiente: compare la versión de PREVAR Web con la del teléfono."
+                    } else {
+                        "Conflicto de sincronización: ${apiError ?: "el registro cambió en PREVAR"}"
+                    }
+                } else {
+                    apiError ?: "PREVAR respondió HTTP ${error.code()}."
+                }
             } else {
                 error.message ?: "No fue posible sincronizar."
             }
@@ -233,11 +250,77 @@ class PrevarRepository(
         }
     }
 
-
-    private fun parseHttpError(error: HttpException): String? {
-        val body = runCatching { error.response()?.errorBody()?.string() }.getOrNull() ?: return null
-        return runCatching { gson.fromJson(body, JsonObject::class.java).get("error")?.asString }.getOrNull()
+    suspend fun resolveConflictKeepWeb(conflict: SyncConflict): SyncResult {
+        val related = dao.outbox(1000).filter { row ->
+            runCatching {
+                val op = gson.fromJson(row.payloadJson, JsonObject::class.java)
+                op.get("evaluation_id")?.asLong == conflict.evaluationId
+            }.getOrDefault(false)
+        }
+        if (related.isNotEmpty()) {
+            dao.deleteOutbox(related.map { it.uuid })
+        }
+        dao.putState(SyncStateEntity("sync_conflict", ""))
+        dao.putState(SyncStateEntity("last_error", ""))
+        return synchronize()
     }
+
+    suspend fun resolveConflictKeepMobile(conflict: SyncConflict): SyncResult {
+        val key = "evaluation:${conflict.evaluationId}"
+        val pending = dao.outboxForEntity(key)
+            ?: return SyncResult(false, "El cambio móvil pendiente ya no existe.")
+        val rebased = rebaseEvaluationOperation(pending.payloadJson, conflict.serverVersion, gson)
+        dao.upsertOutbox(pending.copy(payloadJson = rebased))
+        dao.putState(SyncStateEntity("sync_conflict", ""))
+        dao.putState(SyncStateEntity("last_error", ""))
+        return synchronize()
+    }
+
+    private suspend fun storeEvaluationConflict(body: JsonObject): SyncConflict? {
+        val payload = body.getAsJsonObject("conflict") ?: return null
+        if (payload.get("entity_type")?.asString != "evaluation") return null
+        val evaluationId = payload.get("evaluation_id")?.asLong ?: return null
+        val local = dao.evaluationNow(evaluationId) ?: return null
+        val server = payload.getAsJsonObject("server") ?: return null
+        val conflict = SyncConflict(
+            evaluationId = evaluationId,
+            code = local.code,
+            question = local.question,
+            serverVersion = payload.get("server_version")?.asLong ?: local.serverVersion,
+            web = conflictVersionFromJson(server),
+            mobile = local.toConflictVersion()
+        )
+        dao.putState(SyncStateEntity("sync_conflict", gson.toJson(conflict)))
+        return conflict
+    }
+
+    private fun conflictVersionFromJson(value: JsonObject) = ConflictVersion(
+        result = value.get("evalua")?.asInt ?: 3,
+        fundamentation = value.get("com")?.takeUnless { it.isJsonNull }?.asString.orEmpty(),
+        evidence = value.get("evidencia")?.takeUnless { it.isJsonNull }?.asString.orEmpty(),
+        causes = value.get("causas")?.takeUnless { it.isJsonNull }?.asString.orEmpty(),
+        pca = (value.get("pca")?.asInt ?: 0) == 1,
+        phd = (value.get("phd")?.asInt ?: 0) == 1,
+        amount = value.get("cuantia")?.takeUnless { it.isJsonNull }?.asDouble
+    )
+
+    private fun EvaluationEntity.toConflictVersion() = ConflictVersion(
+        result = result,
+        fundamentation = fundamentation,
+        evidence = evidence,
+        causes = causes,
+        pca = pca,
+        phd = phd,
+        amount = amount
+    )
+
+    private fun parseHttpErrorObject(error: HttpException): JsonObject? {
+        val body = runCatching { error.response()?.errorBody()?.string() }.getOrNull() ?: return null
+        return runCatching { gson.fromJson(body, JsonObject::class.java) }.getOrNull()
+    }
+
+    private fun parseHttpError(error: HttpException): String? =
+        parseHttpErrorObject(error)?.get("error")?.asString
 
     private fun QuestionnaireDto.toEntity() = QuestionnaireEntity(
         id = id,
@@ -290,6 +373,34 @@ class PrevarRepository(
         serverVersion = serverVersion,
         dirty = false
     )
+}
+
+data class ConflictVersion(
+    val result: Int,
+    val fundamentation: String,
+    val evidence: String,
+    val causes: String,
+    val pca: Boolean,
+    val phd: Boolean,
+    val amount: Double?
+)
+
+data class SyncConflict(
+    val evaluationId: Long,
+    val code: String,
+    val question: String,
+    val serverVersion: Long,
+    val web: ConflictVersion,
+    val mobile: ConflictVersion
+)
+
+internal fun rebaseEvaluationOperation(payloadJson: String, serverVersion: Long, gson: Gson = Gson()): String {
+    val payload = gson.fromJson(payloadJson, JsonObject::class.java)
+    require(payload.get("kind")?.asString == "evaluation.update") {
+        "La operación pendiente no corresponde a una evaluación."
+    }
+    payload.addProperty("base_version", serverVersion)
+    return gson.toJson(payload)
 }
 
 data class SyncResult(val success: Boolean, val message: String)

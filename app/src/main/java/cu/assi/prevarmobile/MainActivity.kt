@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,7 +22,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.journeyapps.barcodescanner.ScanIntentResult
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import cu.assi.prevarmobile.data.ConflictVersion
 import cu.assi.prevarmobile.data.PrevarRepository
+import cu.assi.prevarmobile.data.SyncConflict
 import cu.assi.prevarmobile.data.local.EvaluationEntity
 import cu.assi.prevarmobile.data.local.MeasureEntity
 import cu.assi.prevarmobile.data.local.QuestionnaireEntity
@@ -162,8 +166,15 @@ private fun HomeScreen(
     val pending by repository.pendingCount.collectAsStateWithLifecycle(0)
     val lastSync by repository.lastSync.collectAsStateWithLifecycle(null)
     val lastError by repository.lastError.collectAsStateWithLifecycle(null)
+    val conflict by repository.conflict.collectAsStateWithLifecycle(null)
     var syncing by remember { mutableStateOf(false) }
+    var resolving by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
+    var showConflictDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(conflict?.evaluationId) {
+        if (conflict != null) showConflictDialog = true
+    }
 
     Scaffold(
         topBar = {
@@ -193,6 +204,12 @@ private fun HomeScreen(
                 Text("Cambios pendientes: $pending", fontWeight = FontWeight.SemiBold)
                 Text("Última sincronización: ${lastSync ?: "todavía no realizada"}", style = MaterialTheme.typography.bodySmall)
                 if (!lastError.isNullOrBlank()) Text("Error: $lastError", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                if (conflict != null) {
+                    ElevatedAssistChip(
+                        onClick = { showConflictDialog = true },
+                        label = { Text("Resolver conflicto pendiente") }
+                    )
+                }
                 status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
             HorizontalDivider()
@@ -213,6 +230,90 @@ private fun HomeScreen(
                     }
                 }
             }
+        }
+    }
+
+    if (showConflictDialog && conflict != null) {
+        ConflictDialog(
+            conflict = conflict!!,
+            resolving = resolving,
+            onDismiss = { if (!resolving) showConflictDialog = false },
+            onKeepWeb = {
+                resolving = true
+                scope.launch {
+                    val result = repository.resolveConflictKeepWeb(conflict!!)
+                    status = result.message
+                    resolving = false
+                    if (result.success) showConflictDialog = false
+                }
+            },
+            onKeepMobile = {
+                resolving = true
+                scope.launch {
+                    val result = repository.resolveConflictKeepMobile(conflict!!)
+                    status = result.message
+                    resolving = false
+                    if (result.success) showConflictDialog = false
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ConflictDialog(
+    conflict: SyncConflict,
+    resolving: Boolean,
+    onDismiss: () -> Unit,
+    onKeepWeb: () -> Unit,
+    onKeepMobile: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Conflicto de sincronización") },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "${conflict.code}  ${conflict.question}",
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "La misma pregunta cambió en PREVAR Web y en el teléfono. Compare ambas versiones y elija cuál conservar.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                ConflictVersionCard("PREVAR Web", conflict.web)
+                ConflictVersionCard("Teléfono", conflict.mobile)
+            }
+        },
+        confirmButton = {
+            Button(onClick = onKeepMobile, enabled = !resolving) {
+                Text(if (resolving) "Resolviendo…" else "Conservar móvil")
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onKeepWeb, enabled = !resolving) {
+                Text("Conservar PREVAR Web")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ConflictVersionCard(title: String, version: ConflictVersion) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, fontWeight = FontWeight.Bold)
+            Text("Resultado: ${resultLabel(version.result)}")
+            if (version.fundamentation.isNotBlank()) Text("Fundamentación: ${version.fundamentation}")
+            if (version.evidence.isNotBlank()) Text("Evidencia: ${version.evidence}")
+            if (version.causes.isNotBlank()) Text("Causas: ${version.causes}")
+            if (version.pca || version.phd) {
+                Text("PCA: ${if (version.pca) "Sí" else "No"} · PHD: ${if (version.phd) "Sí" else "No"}")
+            }
+            version.amount?.let { Text("Cuantía: $it") }
         }
     }
 }

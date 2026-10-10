@@ -35,6 +35,9 @@ interface PrevarDao {
     @Query("SELECT * FROM outbox ORDER BY createdAt LIMIT :limit")
     suspend fun outbox(limit: Int = 100): List<OutboxEntity>
 
+    @Query("SELECT * FROM outbox WHERE entityKey=:entityKey LIMIT 1")
+    suspend fun outboxForEntity(entityKey: String): OutboxEntity?
+
     @Query("SELECT COUNT(*) FROM outbox")
     fun pendingCount(): Flow<Int>
 
