@@ -35,10 +35,11 @@ Implementados:
 - outbox idempotente;
 - sincronización push/pull;
 - validaciones principales de PREVAR;
-- WorkManager con reintento cuando hay conectividad.
+- WorkManager con reintento cuando hay conectividad;
+- resolución visual de conflictos 409 entre PREVAR Web y móvil;
+- manejo explícito de pérdida de conectividad sin descartar cambios pendientes.
 
 Pendiente de la siguiente iteración:
-- resolución visual de conflictos 409;
 - adjuntos/fotos/PDF offline;
 - borradores de riesgo;
 - endurecimiento HTTPS cuando el despliegue disponga de certificado local.
