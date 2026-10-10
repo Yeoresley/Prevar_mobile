@@ -17,6 +17,6 @@ class PrevarMobileApp : Application() {
         super.onCreate()
         store = SecureStore(this)
         val database = AppDatabase.get(this)
-        repository = PrevarRepository(database.dao(), store, ApiFactory(store), Gson())
+        repository = PrevarRepository(this, database.dao(), store, ApiFactory(store), Gson())
     }
 }
