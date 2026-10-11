@@ -15,15 +15,19 @@ import cu.assi.prevarmobile.domain.EvaluationValidator
 import cu.assi.prevarmobile.domain.RiskMatrix
 import cu.assi.prevarmobile.domain.ServerUrlPolicy
 import cu.assi.prevarmobile.security.AttachmentVault
+import cu.assi.prevarmobile.security.PinnedCaTrust
 import cu.assi.prevarmobile.security.SecureStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Base64
 import java.util.UUID
 import retrofit2.HttpException
 
@@ -87,9 +91,30 @@ class PrevarRepository(
         val objectJson = gson.fromJson(raw, JsonObject::class.java)
         require(objectJson.get("format")?.asString == "PREVAR-MOBILE-PAIR-1") { "El QR no corresponde a PREVAR Mobile." }
         val api = objectJson.get("api")?.asString ?: error("El QR no contiene la dirección del servidor.")
+        val normalized = ServerUrlPolicy.normalize(api, allowPrivateHttp = BuildConfig.DEBUG)
         val secret = objectJson.get("secret")?.asString
         val code = objectJson.get("code")?.asString
-        pair(api, secret, code)
+        val tlsCaSha256 = objectJson.get("tls_ca_sha256")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        val tlsCaUrl = objectJson.get("tls_ca_url")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        require(tlsCaSha256.isBlank() == tlsCaUrl.isBlank()) {
+            "El QR de PREVAR contiene información TLS incompleta."
+        }
+
+        val previousCa = store.serverCaDerBase64
+        try {
+            store.serverCaDerBase64 = if (tlsCaSha256.isNotBlank()) {
+                val der = withContext(Dispatchers.IO) {
+                    PinnedCaTrust.downloadVerifiedCa(normalized, tlsCaUrl, tlsCaSha256)
+                }
+                Base64.getEncoder().encodeToString(der)
+            } else {
+                null
+            }
+            pair(normalized, secret, code)
+        } catch (error: Throwable) {
+            store.serverCaDerBase64 = previousCa
+            throw error
+        }
     }
 
     suspend fun unpair() {
