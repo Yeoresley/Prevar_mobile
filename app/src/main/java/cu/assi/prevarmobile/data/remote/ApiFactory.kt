@@ -1,7 +1,9 @@
 package cu.assi.prevarmobile.data.remote
 
 import cu.assi.prevarmobile.BuildConfig
+import cu.assi.prevarmobile.security.PinnedCaTrust
 import cu.assi.prevarmobile.security.SecureStore
+import java.util.Base64
 import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -22,6 +24,15 @@ class ApiFactory(private val store: SecureStore) {
                 if (url.startsWith("https://")) listOf(ConnectionSpec.MODERN_TLS)
                 else listOf(ConnectionSpec.CLEARTEXT)
             )
+            .apply {
+                if (url.startsWith("https://")) {
+                    store.serverCaDerBase64?.takeIf { it.isNotBlank() }?.let { encoded ->
+                        val der = Base64.getDecoder().decode(encoded)
+                        val tls = PinnedCaTrust.materialFromDer(der)
+                        sslSocketFactory(tls.socketFactory, tls.trustManager)
+                    }
+                }
+            }
             .addInterceptor { chain ->
                 val request = chain.request().newBuilder()
                     .header("Accept", "application/json")
