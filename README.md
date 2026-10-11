@@ -1,4 +1,4 @@
-# PREVAR Mobile Android MVP 0.3.0
+# PREVAR Mobile Android MVP 0.3.2
 
 Proyecto Android nativo para trabajo de autocontrol offline.
 
@@ -56,7 +56,7 @@ El repositorio incluye `.github/workflows/android-debug.yml`. En GitHub use **Ac
 Consulte `BUILD_ONLINE.md` para el procedimiento completo.
 
 
-## Seguridad 0.3.0
+## Seguridad 0.3.2
 
 - La base Room continúa cifrada con SQLCipher.
 - Los adjuntos se cifran individualmente con AES-GCM y una clave no exportable de Android Keystore.
@@ -65,9 +65,16 @@ Consulte `BUILD_ONLINE.md` para el procedimiento completo.
 - La migración de base 1→2 conserva los datos existentes.
 
 
-## Sincronización 0.3.0
+## Sincronización 0.3.2
 
 - Los borradores de riesgo usan operaciones idempotentes `risk_draft.upsert` / `risk_draft.delete`.
 - Las evidencias binarias usan `POST/GET/DELETE attachment`, SHA-256 y límite de 25 MB.
 - Los adjuntos remotos se descargan bajo demanda y vuelven a cifrarse inmediatamente en el almacén privado del dispositivo.
 - La migración Room 2→3 conserva los datos offline existentes y añade estado de sincronización.
+
+
+## Integración Web 0.3.2
+
+- La evidencia documental se adjunta mediante **Adjuntar** o **Tomar foto**; el campo de evidencia Web se muestra solo lectura en el móvil para evitar referencias de archivo inválidas.
+- El servidor PREVAR 1.5 RC2 Bridge v3 materializa el archivo real en `static/files` y enlaza la evaluación Web.
+- Los borradores de riesgo sincronizados se promueven a `gr_riesgo` y quedan visibles desde la pregunta correspondiente.
