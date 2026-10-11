@@ -21,7 +21,7 @@ text += '\n' + (root/'app/src/main/AndroidManifest.xml').read_text(encoding='utf
 text += '\n' + (root/'app/build.gradle.kts').read_text(encoding='utf-8')
 for forbidden in ['PrevarDB#2026!', 'F_PASSWORD', 'mysql://', 'mariadb://', 'TrustAll', 'ALLOW_ALL_HOSTNAME_VERIFIER']:
     if forbidden in text: raise SystemExit('Secreto/conexión directa detectada: '+forbidden)
-for marker in ['evaluation.update','measure.upsert','risk_draft.upsert','uploadAttachment','PREVAR-MOBILE-PAIR-1','WorkManager','SQLCipher','AttachmentVault','RiskMatrix','ServerUrlPolicy','usesCleartextTraffic','versionName = "0.3.1"']:
+for marker in ['evaluation.update','measure.upsert','risk_draft.upsert','uploadAttachment','PREVAR-MOBILE-PAIR-1','WorkManager','SQLCipher','AttachmentVault','RiskMatrix','ServerUrlPolicy','usesCleartextTraffic','versionName = "0.3.2"']:
     if marker not in text and marker not in (root/'README.md').read_text(encoding='utf-8'):
         raise SystemExit('Marcador funcional faltante: '+marker)
 # Compila el núcleo Kotlin puro disponible sin Android SDK.
