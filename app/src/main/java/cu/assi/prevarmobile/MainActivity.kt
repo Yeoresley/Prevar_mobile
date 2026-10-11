@@ -479,7 +479,20 @@ private fun EvaluationScreen(
                     }
                 }
                 item {
-                    OutlinedTextField(evidence, { evidence = it }, label = { Text("Evidencia / referencia documental") }, minLines = 2, modifier = Modifier.fillMaxWidth(), enabled = current.canEdit)
+                    if (evidence.isNotBlank()) {
+                        OutlinedTextField(
+                            value = evidence,
+                            onValueChange = {},
+                            label = { Text("Evidencia Web (solo lectura)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            readOnly = true,
+                            enabled = false
+                        )
+                    }
+                    Text(
+                        "Para evidencia documental use Adjuntar o Tomar foto. PREVAR Web recibirá el archivo real al sincronizar.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
             item {
