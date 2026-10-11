@@ -27,6 +27,17 @@ class SecureStore(context: Context) {
             editor.apply()
         }
 
+    var serverCaDerBase64: String?
+        get() = prefs.getString("server_ca_enc", null)?.let {
+            runCatching { String(box.decrypt(it), Charsets.UTF_8) }.getOrNull()
+        }
+        set(value) {
+            val editor = prefs.edit()
+            if (value.isNullOrBlank()) editor.remove("server_ca_enc")
+            else editor.putString("server_ca_enc", box.encrypt(value.toByteArray(Charsets.UTF_8)))
+            editor.apply()
+        }
+
     var userName: String?
         get() = prefs.getString("user_name", null)
         set(value) = prefs.edit().putString("user_name", value).apply()
@@ -36,6 +47,12 @@ class SecureStore(context: Context) {
         set(value) = prefs.edit().putLong("unit_id", value).apply()
 
     fun clearPairing() {
-        prefs.edit().remove("api_url").remove("token_enc").remove("user_name").remove("unit_id").apply()
+        prefs.edit()
+            .remove("api_url")
+            .remove("token_enc")
+            .remove("server_ca_enc")
+            .remove("user_name")
+            .remove("unit_id")
+            .apply()
     }
 }
